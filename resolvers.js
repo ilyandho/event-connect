@@ -1,4 +1,4 @@
-const { UserInputError } = require('apollo-server');
+const { UserInputError, AuthenticationError } = require('apollo-server');
 const { uuid } = require('uuidv4');
 const { createWriteStream } = require('fs');
 const path = require('path');
@@ -27,7 +27,11 @@ const resolvers = {
         throw new UserInputError('Please provide the event id');
       }
       try {
-        const event = await Event.findById({ _id: args.id });
+        const event = await Event.findById({ _id: args.id }).populate(
+          'creator',
+          'id fullName username'
+        );
+        console.log('EVents: ', event);
         if (!event) {
           return new Error(`no event found with id: ${args.id}`);
         }
@@ -43,9 +47,10 @@ const resolvers = {
         return err;
       }
     },
+    me: (root, args, { currentUser }) => currentUser,
   },
   Mutation: {
-    createEvent: async (_, args) => {
+    createEvent: async (_, args, { currentUser }) => {
       const {
         name,
         description,
@@ -58,7 +63,11 @@ const resolvers = {
         avatar,
       } = args;
 
-      // if (avatar) {
+      if (!currentUser) {
+        throw new AuthenticationError('Login to create events');
+      }
+
+      const user = await User.findById({ _id: currentUser._id });
       const posterPath = await avatar.then(async (file) => {
         const { createReadStream, filename } = await file;
         const id = uuid();
@@ -70,12 +79,7 @@ const resolvers = {
         });
         return image;
       });
-
-      const link = path.join(__dirname, posterPath.pathToPoster);
-      console.log('link', link);
-
-      console.log('poster', posterPath.pathToPoster);
-      const event = new Event({
+      const event = {
         name,
         description,
         host,
@@ -84,26 +88,41 @@ const resolvers = {
         address,
         tag,
         date,
+        creator: currentUser._id,
         posterPath: posterPath.pathToPoster,
-      });
+      };
 
       try {
-        const result = await event.save();
-
-        return result;
+        const result = await Event.create(event);
+        user.events.push(result._id);
+        await user.save();
+        return result.toJSON();
       } catch (err) {
         throw new UserInputError(err.message, {
           invalidArgs: args,
         });
       }
     },
-    deleteEvent: async (_, args) => {
+    deleteEvent: async (_, args, { currentUser }) => {
       if (!args) {
         throw new UserInputError('Please provide the event id');
       }
 
+      if (!currentUser) {
+        throw new AuthenticationError('You are not logged in');
+      }
+
       try {
-        await Event.findByIdAndDelete({ _id: args.id });
+        const event = await Event.findById({ _id: args.id });
+        if (!event) {
+          throw new UserInputError(`no blog with id ${args.id} is found`);
+        }
+
+        if (currentUser.id === event.creator._id) {
+          throw new AuthenticationError('you can only delete your events');
+        }
+
+        await Event.findOneAndDelete({ _id: args.id });
         return 'deleted';
       } catch (err) {
         if (err.name === 'CastError') {
@@ -113,14 +132,30 @@ const resolvers = {
         return err;
       }
     },
-    updateEvent: async (_, args) => {
+    updateEvent: async (_, args, { currentUser }) => {
       if (!args) {
         throw new UserInputError('Please provide the event id');
       }
 
       try {
-        await Event.findByIdAndUpdate(args.id, args);
-        const event = await Event.findById({ _id: args.id });
+        const eventFound = await Event.findById({ _id: args.id });
+
+        if (!eventFound) {
+          throw new UserInputError(`no blog with id ${args.id} is found`);
+        }
+        console.log(currentUser.id, '-- -', eventFound.creator._id);
+        if (
+          // eslint-disable-next-line operator-linebreak
+          JSON.stringify(currentUser.id) !==
+          JSON.stringify(eventFound.creator._id)
+        ) {
+          throw new AuthenticationError('you can only updated your events');
+        }
+
+        // if (eventFound.creator._id)
+        const event = await Event.findOneAndUpdate({ _id: args.id }, args, {
+          new: true,
+        }).populate('creator', '_id fullName username');
         return event;
       } catch (err) {
         if (err.name === 'CastError') {
@@ -131,56 +166,67 @@ const resolvers = {
       }
     },
     addUser: async (_, args) => {
-      try {
-        const hashPassword = await bcrypt.hash(args.password, 10);
-        const user = new User({ ...args, passwordHash: hashPassword });
-        const savedUser = await user.save();
-        console.log(savedUser);
-        return savedUser;
-      } catch (err) {
-        console.log('error while saving', err);
-        if (err.code === '11000') {
-          throw new Error(`username ${args.username}  already exists`);
-        }
-        if (err.kind === 'required') {
-          if (err.path === 'passwordHash') {
-            throw UserInputError('password is required');
-          }
-          if (err.path === 'username') {
-            throw UserInputError('username is required');
-          }
-          if (err.path === 'name') {
-            throw UserInputError('name is required');
-          }
-        }
-        return { error: 'err.message' };
+      if (!args.fullName) {
+        throw new UserInputError('please add your name');
       }
-    },
-    editUserPassword: async (_, args) => {
-      try {
-        // await User.findByIdAndUpdate(args.username,);
-        // const user = await User.findById({ username: args.username });
-        const hashPassword = await bcrypt.hash(args.password, 10);
 
-        const user = await User.findOneAndUpdate(args.username, {
+      if (!args.username) {
+        throw new UserInputError('please add a username');
+      }
+      if (!args.password) {
+        throw new UserInputError('please add a password');
+      }
+      try {
+        const hashPassword = await bcrypt.hash(args.password.trim(), 10);
+
+        const userExists = await User.findOne({ username: args.username });
+        if (userExists) {
+          throw new Error('username already exists');
+        }
+
+        const result = await User.create({
+          ...args,
           passwordHash: hashPassword,
         });
-
+        const user = result.toJSON();
         console.log(user);
-        // user.passwordHash = hashPassword;
-        // user.save();
         return user;
       } catch (err) {
-        // if (err.name === 'CastError') {
-        //   return new Error(`Event id: ${args.id} is malformatted`);
-        // }
+        throw new UserInputError(err.message);
+      }
+    },
+    editUserPassword: async (_, args, { currentUser }) => {
+      if (!currentUser) {
+        throw new AuthenticationError('You are not logged in');
+      }
+      const userExists = await User.findOne({ username: args.username });
+      if (!userExists) {
+        throw new Error('User does not');
+      }
 
+      if (currentUser.username !== userExists.username) {
+        throw new AuthenticationError('You are not allowed to edit this user');
+      }
+      try {
+        const hashPassword = await bcrypt.hash(args.password, 10);
+
+        const user = await User.findOneAndUpdate(
+          { username: args.username },
+          {
+            passwordHash: hashPassword,
+          },
+          {
+            new: true,
+          }
+        );
+        return user.toJSON();
+      } catch (err) {
         return err;
       }
     },
     login: async (_, args) => {
-      const user = await User.findOne({ username: args.username });
-
+      const result = await User.findOne({ username: args.username });
+      const user = result.toJSON();
       if (!user || !args.password) {
         throw new UserInputError('wrong credentials');
       }
@@ -198,10 +244,8 @@ const resolvers = {
 
       const userDetails = {
         username: user.username,
-        // eslint-disable-next-line no-underscore-dangle
-        id: user._id,
+        id: user.id,
       };
-      console.log(userDetails);
       return { value: jwt.sign(userDetails, process.env.JWT_SECRET) };
     },
   },

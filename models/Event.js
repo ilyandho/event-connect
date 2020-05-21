@@ -1,3 +1,4 @@
+/* eslint-disable no-underscore-dangle */
 const mongoose = require('mongoose');
 const geocoder = require('../utils/geocoder');
 
@@ -85,6 +86,10 @@ const EventSchema = mongoose.Schema({
   tag: [String],
   date: { type: Date, required: true },
   posterPath: String,
+  creator: {
+    type: mongoose.Types.ObjectId,
+    ref: 'User',
+  },
 });
 
 // Geocode & create location
@@ -100,6 +105,14 @@ EventSchema.pre('save', async function (next) {
   // Do not save address
   this.address = undefined;
   next();
+});
+
+EventSchema.set('toJSON', {
+  transform: (document, returnedObject) => {
+    returnedObject.id = returnedObject._id.toString();
+    delete returnedObject._id;
+    delete returnedObject.__v;
+  },
 });
 
 module.exports = mongoose.model('Event', EventSchema);

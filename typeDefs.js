@@ -14,7 +14,7 @@ const typeDefs = gql`
   }
 
   type Event {
-    id: ID
+    id: ID!
     name: String!
     description: String!
     host: String!
@@ -24,9 +24,11 @@ const typeDefs = gql`
     tag: [String]
     date: String!
     posterPath: String
+    creator: User!
   }
 
   type User {
+    id: ID!
     fullName: String!
     username: String!
     passwordHash: String!
@@ -36,9 +38,11 @@ const typeDefs = gql`
   type Token {
     value: String!
   }
+
   type Query {
     events: [Event]
     event(id: String!): Event
+    me: User
   }
 
   type Mutation {
